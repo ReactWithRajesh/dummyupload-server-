@@ -5,112 +5,73 @@ const path = require("path");
 const cors = require("cors");
 
 const app = express();
-
-// ----------------------------
-// CORS (Required for Codespaces)
-// ----------------------------
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "X-Chunk-Id", "X-Chunk-Index"],
-  })
-);
-
-app.options("*", cors());
+app.use(cors());
 app.use(express.json());
 
-// ----------------------------
-// Upload Directories
-// ----------------------------
+// Root upload directory
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-const CHUNK_DIR = path.join(UPLOAD_DIR, "chunks");
-const MERGED_DIR = path.join(UPLOAD_DIR, "merged");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// Create folders
-fs.mkdirSync(CHUNK_DIR, { recursive: true });
-fs.mkdirSync(MERGED_DIR, { recursive: true });
-
-// ----------------------------
-// Multer (Store chunks temp)
-// ----------------------------
+// Multer storage
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, CHUNK_DIR),
-  filename: (req, file, cb) => cb(null, Date.now().toString()),
+  destination: (req, file, cb) => {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + ".chunk");
+  }
 });
 
 const upload = multer({ storage });
 
-// ----------------------------
-// 1. Receive a chunk
-// ----------------------------
-app.post("/api/upload-chunk", upload.single("file"), (req, res) => {
-  const chunkId = req.headers["x-chunk-id"];
+// ======================================
+// 1) Receive every chunk as an individual upload
+// ======================================
+app.post("/api/upload-video", upload.single("file"), (req, res) => {
+  const uploadId = req.headers["x-upload-id"];
   const chunkIndex = req.headers["x-chunk-index"];
+  const totalChunks = req.headers["x-total-chunks"];
 
-  if (!chunkId || chunkIndex === undefined) {
-    return res.status(400).json({ error: "Missing chunk headers" });
+  if (!uploadId || chunkIndex === undefined) {
+    return res.status(400).json({ error: "Missing headers" });
   }
 
-  const finalChunkName = `${chunkId}-${chunkIndex}`;
-  const destPath = path.join(CHUNK_DIR, finalChunkName);
+  const chunkFilename = `${uploadId}-chunk-${chunkIndex}`;
+  const finalPath = path.join(UPLOAD_DIR, chunkFilename);
 
-  fs.rename(req.file.path, destPath, (err) => {
-    if (err) return res.status(500).json({ error: "Failed to write chunk" });
-
-    console.log(`✔ Stored chunk ${finalChunkName}`);
-    res.json({ success: true });
-  });
-});
-
-// ----------------------------
-// 2. Merge all chunks
-// ----------------------------
-app.post("/api/merge-chunks", async (req, res) => {
-  const { fileName, totalChunks } = req.body;
-
-  if (!fileName || totalChunks === undefined) {
-    return res.status(400).json({ error: "Missing merge info" });
-  }
-
-  const outputFile = path.join(MERGED_DIR, fileName);
-  const writeStream = fs.createWriteStream(outputFile);
-
-  console.log(`🔧 Merging ${totalChunks} chunks into ${outputFile}`);
-
-  for (let i = 0; i < totalChunks; i++) {
-    const chunkName = `${fileName}-chunk-${i}`;
-    const chunkPath = path.join(CHUNK_DIR, chunkName);
-
-    if (fs.existsSync(chunkPath)) {
-      console.log(`➡ Adding ${chunkName}`);
-      writeStream.write(fs.readFileSync(chunkPath));
-      fs.unlinkSync(chunkPath);
-    } else {
-      console.warn(`⚠ Missing chunk: ${chunkName}`);
+  fs.rename(req.file.path, finalPath, (err) => {
+    if (err) {
+      return res.status(500).json({ error: "Failed to store chunk" });
     }
-  }
 
-  writeStream.end();
+    console.log(`✔ Stored chunk => ${chunkFilename}`);
 
-  writeStream.on("finish", () => {
-    console.log(`🎉 Merge complete: ${fileName}`);
-    res.json({
+    return res.json({
       success: true,
-      fileUrl: `/uploads/merged/${fileName}`,
+      chunkIndex: Number(chunkIndex),
+      totalChunks: Number(totalChunks),
+      storedAs: chunkFilename
     });
   });
 });
 
-// ----------------------------
-// Static access to final files
-// ----------------------------
+// ======================================
+// Static file serving
+// ======================================
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// ----------------------------
-// Start Server
-// ----------------------------
-app.listen(8080, () => {
-  console.log("🚀 Upload server running at:");
-  console.log("👉 http://localhost:8080");
+// ======================================
+// Root endpoint
+// ======================================
+app.get("/", (req, res) => {
+  res.send("Chunk upload server is running.");
+});
+
+// ======================================
+// Start server
+// ======================================
+const PORT = process.env.PORT || 8080;
+
+app.listen(PORT, () => {
+  console.log(`🚀 Backend active at http://localhost:${PORT}`);
 });
